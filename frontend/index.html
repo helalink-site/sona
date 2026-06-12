@@ -349,7 +349,10 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
         <div class="see-all" onclick="loadMoreTracks('new')">See all</div>
       </div>
       <div class="scroll-row" id="newRow">
-        ${[0,1,2,3].map(()=>`<div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>`).join('')}
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
       </div>
       <div class="section-header" style="margin-top:1.4rem">
         <div class="section-title">Trending</div>
@@ -360,7 +363,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
         <div class="section-title">For You</div>
       </div>
       <div class="scroll-row" id="forYouRow">
-        ${[0,1,2].map(()=>`<div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>`).join('')}
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
+        <div class="card"><div class="card-thumb"><div class="skeleton"></div></div></div>
       </div>
     </div>
   </div>
