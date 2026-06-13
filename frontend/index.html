@@ -851,12 +851,13 @@ function updateUserUI() {
 // ── HOME ────────────────────────────────────────────────────────────────────
 async function loadHome() {
   try {
-    const genre = prefs.genres[0] || 'afrobeats';
-    const artist = prefs.artists[Math.floor(Math.random()*prefs.artists.length)] || genre;
+    const genre = prefs.genres[0] || 'afrobeats bongo';
+    const artist = prefs.artists.length ? prefs.artists[Math.floor(Math.random()*prefs.artists.length)] : 'Diamond Platnumz Rayvanny';
+    const fyQuery = prefs.artists.length ? artist : 'trending east africa 2025';
     const [r1, r2, r3] = await Promise.all([
       fetch(`${API}/search?q=${encodeURIComponent('new '+genre+' 2025')}&limit=8`),
       fetch(`${API}/search?q=${encodeURIComponent('trending '+genre)}&limit=5`),
-      fetch(`${API}/search?q=${encodeURIComponent(artist)}&limit=8`),
+      fetch(`${API}/search?q=${encodeURIComponent(fyQuery)}&limit=8`),
     ]);
     const [d1, d2, d3] = await Promise.all([r1.json(), r2.json(), r3.json()]);
     window.newTracks = d1.tracks||[];
