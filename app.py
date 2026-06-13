@@ -1,178 +1,123 @@
-"""
-Sona Backend — Flask + Paxsenix API + yt-dlp fallback
-"""
-import os, json, time, threading, logging, re, hashlib
+import os, json, hashlib, re, subprocess, logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import requests
-import sqlite3
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('sona')
-
 app = Flask(__name__)
 CORS(app, origins=['*'])
-
 CACHE_DIR = Path(os.getenv('CACHE_DIR', '/tmp/sona_cache'))
-DB_PATH = os.getenv('DB_PATH', 'sona.db')
 PORT = int(os.getenv('PORT', 5000))
-PAXSENIX = 'https://api.paxsenix.biz.id'
-
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_cache = {}
 
-# ── DB ───────────────────────────────────────────────────────────────────────
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def cache_get(key):
+    if key in _cache:
+        data, exp = _cache[key]
+        if datetime.now() < exp: return data
+        del _cache[key]
+    return None
 
-def init_db():
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS search_cache (
-            key TEXT PRIMARY KEY, data TEXT, expires_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS notified_tracks (
-            video_id TEXT PRIMARY KEY, title TEXT, notified_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.commit()
-    conn.close()
+def cache_set(key, data, mins=30):
+    _cache[key] = (data, datetime.now() + timedelta(minutes=mins))
 
-# ── SEARCH ───────────────────────────────────────────────────────────────────
-def search_tracks(query: str, limit: int = 10) -> list:
-    cache_key = hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()
-    conn = get_db()
-    row = conn.execute('SELECT data, expires_at FROM search_cache WHERE key=?', (cache_key,)).fetchone()
-    if row:
-        try:
-            if datetime.fromisoformat(row['expires_at']) > datetime.now():
-                conn.close()
-                return json.loads(row['data'])
-        except: pass
-    conn.close()
-
-    tracks = []
-    # Try paxsenix first
+def search_tracks(query, limit=10):
+    key = hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()
+    cached = cache_get(key)
+    if cached: return cached
     try:
-        r = requests.get(f'{PAXSENIX}/yt/search', params={'q': query, 'max': limit}, timeout=15)
-        data = r.json()
-        items = data.get('data') or data.get('results') or data.get('items') or []
-        for item in items[:limit]:
-            vid = item.get('id') or item.get('videoId') or item.get('video_id','')
+        cmd = ['yt-dlp', f'ytsearch{limit}:{query}', '--flat-playlist',
+               '--print', '%(id)s|%(title)s|%(uploader)s|%(duration)s',
+               '--no-warnings', '--quiet']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        tracks = []
+        for line in r.stdout.strip().split('\n'):
+            if not line.strip(): continue
+            p = line.split('|')
+            if len(p) < 3: continue
+            vid = p[0].strip()
+            try:
+                d = int(p[3].strip()) if len(p) > 3 else 0
+                m, s = divmod(d, 60)
+                dur = f'{m}:{s:02d}'
+            except: dur = ''
             tracks.append({
                 'videoId': vid,
-                'title': item.get('title','Unknown'),
-                'artist': item.get('channel') or item.get('uploader','Unknown'),
-                'thumbnail': item.get('thumbnail') or item.get('thumb') or (f'https://img.youtube.com/vi/{vid}/mqdefault.jpg' if vid else ''),
-                'duration': item.get('duration',''),
-                'url': f'https://youtube.com/watch?v={vid}' if vid else '',
+                'title': p[1].strip(),
+                'artist': p[2].strip().replace(' - Topic',''),
+                'thumbnail': f'https://img.youtube.com/vi/{vid}/mqdefault.jpg',
+                'duration': dur,
+                'url': f'https://youtube.com/watch?v={vid}',
             })
+        if tracks: cache_set(key, tracks)
+        return tracks
     except Exception as e:
-        log.error(f'Paxsenix search error: {e}')
+        log.error(f'Search error: {e}')
+        return []
 
-    # Fallback to yt-dlp if paxsenix returned nothing
-    if not tracks:
-        try:
-            import yt_dlp
-            opts = {'quiet':True,'no_warnings':True,'extract_flat':True,'skip_download':True,'playlistend':limit}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                result = ydl.extract_info(f'ytsearch{limit}:{query}', download=False)
-                for e in (result.get('entries') or []):
-                    if not e: continue
-                    vid = e.get('id','')
-                    dur = e.get('duration',0) or 0
-                    m,s = divmod(int(dur),60)
-                    tracks.append({
-                        'videoId': vid,
-                        'title': e.get('title','Unknown'),
-                        'artist': e.get('uploader','Unknown').replace(' - Topic',''),
-                        'thumbnail': e.get('thumbnail') or f'https://img.youtube.com/vi/{vid}/mqdefault.jpg',
-                        'duration': f'{m}:{s:02d}' if dur else '',
-                        'url': f'https://youtube.com/watch?v={vid}',
-                    })
-        except Exception as e:
-            log.error(f'yt-dlp search error: {e}')
-
-    if tracks:
-        conn = get_db()
-        expires = (datetime.now() + timedelta(minutes=30)).isoformat()
-        conn.execute('INSERT OR REPLACE INTO search_cache VALUES (?,?,?)', (cache_key, json.dumps(tracks), expires))
-        conn.commit()
-        conn.close()
-    return tracks
-
-# ── STREAM ───────────────────────────────────────────────────────────────────
-def get_stream_url(video_id: str) -> str:
-    url = f'https://youtube.com/watch?v={video_id}'
-    # Try paxsenix
+def get_stream_url(video_id):
+    key = f'stream:{video_id}'
+    cached = cache_get(key)
+    if cached: return cached
     try:
-        r = requests.get(f'{PAXSENIX}/dl/ytmp3', params={'url': url}, timeout=20)
-        data = r.json()
-        stream = data.get('url') or data.get('download_url') or data.get('link')
-        if stream:
-            return stream
+        cmd = ['yt-dlp', f'https://youtube.com/watch?v={video_id}',
+               '--get-url', '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+               '--no-warnings', '--quiet']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        url = r.stdout.strip().split('\n')[0]
+        if url and url.startswith('http'):
+            cache_set(key, url, mins=5)
+            return url
     except Exception as e:
-        log.error(f'Paxsenix stream error: {e}')
-    # Fallback yt-dlp
-    try:
-        import yt_dlp
-        opts = {'quiet':True,'no_warnings':True,'skip_download':True,'format':'bestaudio/best'}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats',[])
-            audio = [f for f in formats if f.get('acodec')!='none' and f.get('vcodec')=='none']
-            if audio:
-                return sorted(audio, key=lambda x: x.get('abr',0) or 0, reverse=True)[0]['url']
-            return info.get('url','')
-    except Exception as e:
-        log.error(f'yt-dlp stream error: {e}')
+        log.error(f'Stream error: {e}')
     return ''
 
-# ── ROUTES ───────────────────────────────────────────────────────────────────
 @app.route('/api/health')
 def health():
-    return jsonify({'status':'ok','service':'Sona','version':'2.0'})
+    return jsonify({'status': 'ok', 'service': 'Sona', 'version': '2.0'})
 
 @app.route('/api/search')
 def search():
-    q = request.args.get('q','').strip()
-    limit = min(int(request.args.get('limit',10)), 20)
-    if not q:
-        return jsonify({'tracks':[],'error':'Query required'}), 400
+    q = request.args.get('q', '').strip()
+    limit = min(int(request.args.get('limit', 10)), 20)
+    if not q: return jsonify({'tracks': [], 'error': 'Query required'}), 400
     tracks = search_tracks(q, limit)
-    return jsonify({'tracks':tracks,'query':q,'count':len(tracks)})
+    return jsonify({'tracks': tracks, 'query': q, 'count': len(tracks)})
 
 @app.route('/api/stream/<video_id>')
 def stream(video_id):
     try:
         url = get_stream_url(video_id)
-        if not url:
-            return jsonify({'error':'Could not get stream URL'}), 404
-        return jsonify({'url':url,'videoId':video_id})
+        if not url: return jsonify({'error': 'Could not get stream URL'}), 404
+        return jsonify({'url': url, 'videoId': video_id})
     except Exception as e:
-        return jsonify({'error':str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download/<video_id>')
 def download(video_id):
     title = request.args.get('title', video_id)
-    url = f'https://youtube.com/watch?v={video_id}'
-    try:
-        r = requests.get(f'{PAXSENIX}/dl/ytmp3', params={'url':url}, timeout=20)
-        data = r.json()
-        dl_url = data.get('url') or data.get('download_url') or data.get('link')
-        if dl_url:
-            return jsonify({'url': dl_url, 'title': title})
-        return jsonify({'error':'Download failed'}), 500
-    except Exception as e:
-        return jsonify({'error':str(e)}), 500
+    safe = re.sub(r'[^\w\s-]', '', title)[:50]
+    out = CACHE_DIR / f'{video_id}.mp3'
+    if not out.exists():
+        try:
+            subprocess.run([
+                'yt-dlp', f'https://youtube.com/watch?v={video_id}',
+                '-x', '--audio-format', 'mp3', '--audio-quality', '0',
+                '-o', str(CACHE_DIR / f'{video_id}.%(ext)s'),
+                '--no-warnings', '--quiet'
+            ], timeout=120)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    if out.exists():
+        return send_file(str(out), as_attachment=True, download_name=f'{safe}.mp3', mimetype='audio/mpeg')
+    return jsonify({'error': 'Download failed'}), 500
 
 @app.route('/api/artists')
 def artists():
-    q = request.args.get('q','')
-    tracks = search_tracks(f'{q} artist', 5)
+    q = request.args.get('q', '')
+    tracks = search_tracks(f'{q} official', 5)
     names = list(dict.fromkeys([t['artist'] for t in tracks if t['artist']]))
     return jsonify({'artists': names})
 
@@ -180,7 +125,6 @@ def artists():
 def subscribe():
     return jsonify({'success': True})
 
-# ── SERVE FRONTEND ────────────────────────────────────────────────────────────
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
@@ -191,6 +135,5 @@ def serve(path):
     return send_file(str(frontend / 'index.html'))
 
 if __name__ == '__main__':
-    init_db()
-    log.info(f'🎵 Sona starting on port {PORT}')
+    log.info(f'Sona starting on port {PORT}')
     app.run(host='0.0.0.0', port=PORT, debug=False)
