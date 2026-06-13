@@ -940,16 +940,20 @@ async function playTrack(track, q, idx) {
   queue = q||[track]; curIdx = idx||0;
   updatePlayerUI(track);
   document.getElementById('miniPlayer').classList.add('show');
+  toast('⏳ Loading...');
   try {
-    const res = await fetch(`${API}/stream/${track.videoId}`);
-    const data = await res.json();
-    if (!data.url) throw new Error('no url');
-    audio.src = data.url; audio.play();
+    // Use stream endpoint directly as audio src
+    audio.src = `${API}/stream/${track.videoId}`;
+    audio.load();
+    await audio.play();
     playing = true; updatePlayBtn(true);
     document.getElementById('fpArt').classList.add('playing');
     addToHistory(track);
     updateMediaSession(track);
-  } catch(e) { toast('Failed to load audio'); updatePlayBtn(false); }
+  } catch(e) {
+    toast('❌ Failed to load audio');
+    updatePlayBtn(false);
+  }
 }
 
 function updatePlayerUI(t) {
@@ -1100,7 +1104,12 @@ function showPage(name){
 }
 function shareTrack(){const t=queue[curIdx];if(!t)return;if(navigator.share)navigator.share({title:t.title,url:window.location.href});else{navigator.clipboard.writeText(window.location.href);toast('Link copied!');}}
 function viewArtist(){const t=queue[curIdx];if(t){document.getElementById('searchInput').value=t.artist;showPage('search');doSearch(t.artist);}}
-function loadMoreTracks(){toast('Loading more...');}
+async function loadMoreTracks(type) {
+  showPage('search');
+  const q = type === 'new' ? 'new afrobeats bongo 2025' : 'trending afrobeats 2025';
+  document.getElementById('searchInput').value = q;
+  await doSearch(q);
+}
 function installApp(){if(deferredInstall){deferredInstall.prompt();hideInstallBanner();}else toast('Browser menu → Add to Home Screen');}
 function showInstallBanner(){document.getElementById('installBanner').style.display='block';}
 function hideInstallBanner(){document.getElementById('installBanner').style.display='none';}
