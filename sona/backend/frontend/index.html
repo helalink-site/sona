@@ -630,6 +630,20 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 
 <audio id="audio"></audio>
 
+<!-- PWA INSTALL BANNER -->
+<div id="installBanner" style="display:none;position:fixed;bottom:calc(var(--nav-h) + var(--player-h) + 1rem + var(--safe-b));left:.8rem;right:.8rem;background:var(--surface2);border:1px solid var(--violet);border-radius:18px;padding:1rem 1.2rem;z-index:300;box-shadow:0 4px 20px rgba(108,99,255,.3);animation:slideUp .3s ease">
+  <div style="display:flex;align-items:center;gap:.8rem">
+    <img src="icons/icon-72.png" style="width:44px;height:44px;border-radius:12px"/>
+    <div style="flex:1">
+      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem">Install Sona</div>
+      <div style="font-size:.75rem;color:var(--muted)">Add to home screen for best experience</div>
+    </div>
+    <button onclick="hideInstallBanner()" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer"><i class="ph ph-x"></i></button>
+  </div>
+  <button onclick="installApp()" style="width:100%;margin-top:.8rem;padding:.7rem;border-radius:12px;background:var(--grad);border:none;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem;cursor:pointer">⬇️ Install Now</button>
+</div>
+<style>@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}</style>
+
 <script>
 // ── SUPABASE ────────────────────────────────────────────────────────────────
 const SUPA_URL = 'https://hticpadhdspuxkqgnifc.supabase.co';
@@ -664,7 +678,18 @@ window.addEventListener('load', async () => {
     }
   }, 1600);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
-  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; });
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredInstall = e;
+    // Show install banner after 3 seconds
+    setTimeout(() => {
+      if (deferredInstall) showInstallBanner();
+    }, 3000);
+  });
+  window.addEventListener('appinstalled', () => {
+    toast('✅ Sona installed!');
+    hideInstallBanner();
+  });
   // Media session
   if ('mediaSession' in navigator) setupMediaSession();
 });
@@ -1075,7 +1100,9 @@ function showPage(name){
 function shareTrack(){const t=queue[curIdx];if(!t)return;if(navigator.share)navigator.share({title:t.title,url:window.location.href});else{navigator.clipboard.writeText(window.location.href);toast('Link copied!');}}
 function viewArtist(){const t=queue[curIdx];if(t){document.getElementById('searchInput').value=t.artist;showPage('search');doSearch(t.artist);}}
 function loadMoreTracks(){toast('Loading more...');}
-function installApp(){if(deferredInstall)deferredInstall.prompt();else toast('Browser menu → Add to Home Screen');}
+function installApp(){if(deferredInstall){deferredInstall.prompt();hideInstallBanner();}else toast('Browser menu → Add to Home Screen');}
+function showInstallBanner(){document.getElementById('installBanner').style.display='block';}
+function hideInstallBanner(){document.getElementById('installBanner').style.display='none';}
 function clearCache(){caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).then(()=>toast('✅ Cache cleared'));}
 
 function toggleTheme(){
