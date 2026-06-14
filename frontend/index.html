@@ -303,18 +303,20 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
     <button class="upgrade-btn" onclick="showAuth()">✨ Full Access</button>
   </div>
   <div class="guest-content">
-    <div class="guest-hero">
-      <i class="ph ph-device-mobile-speaker"></i>
-      <h2>Local Music Player</h2>
-      <p>Play your device's music files. Sign in to unlock streaming, downloads & new release alerts.</p>
-    </div>
-    <div class="file-drop" id="fileDrop" onclick="document.getElementById('fileInput').click()">
-      <i class="ph ph-folder-open"></i>
-      <p>Tap to <strong>open music files</strong> from your device</p>
-      <p style="margin-top:.3rem;font-size:.75rem">Supports MP3, WAV, AAC, OGG, FLAC</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem">
+      <div style="font-family:'Syne',sans-serif;font-size:1.2rem;font-weight:700">Local Music</div>
+      <button onclick="document.getElementById('fileInput').click()" style="display:flex;align-items:center;gap:.5rem;padding:.5rem 1rem;border-radius:50px;background:var(--grad);border:none;color:#fff;font-size:.8rem;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif">
+        <i class="ph ph-folder-open"></i> Open Files
+      </button>
     </div>
     <input type="file" id="fileInput" multiple accept="audio/*" style="display:none" onchange="loadLocalFiles(this.files)"/>
-    <div class="local-tracks" id="localTracks"></div>
+    <div class="local-tracks" id="localTracks">
+      <div style="text-align:center;padding:3rem 1rem;color:var(--muted)">
+        <i class="ph ph-music-notes-simple" style="font-size:3rem;display:block;margin-bottom:.8rem;color:var(--border)"></i>
+        <p style="font-size:.9rem">Tap <strong style="color:var(--violet)">Open Files</strong> to load your music</p>
+        <p style="font-size:.78rem;margin-top:.4rem">MP3, WAV, AAC, FLAC supported</p>
+      </div>
+    </div>
   </div>
   <!-- Mini player shared -->
 </div>
@@ -607,13 +609,6 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
     <button class="fp-btn" onclick="nextTrack()"><i class="ph ph-skip-forward"></i></button>
     <button class="fp-btn sm" id="repeatBtn" onclick="toggleRepeat()"><i class="ph ph-repeat"></i></button>
   </div>
-
-  <!-- Volume row - compact, at bottom -->
-  <div class="vol-row">
-    <i class="ph ph-speaker-low"></i>
-    <input type="range" class="vol-slider" min="0" max="100" value="80" oninput="setVolume(this.value)"/>
-    <i class="ph ph-speaker-high"></i>
-  </div>
 </div>
 
 <!-- MODALS -->
@@ -661,6 +656,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
   </div>
 </div>
 
+<!-- Hidden YouTube IFrame Player -->
+<div id="ytPlayer" style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;bottom:0;left:0"></div>
 <audio id="audio"></audio>
 
 <!-- PWA INSTALL BANNER -->
@@ -977,111 +974,151 @@ async function doSearch(q) {
   } catch(e) { el.innerHTML='<div style="color:var(--coral);padding:1rem">Search failed</div>'; }
 }
 
-// ── PLAYER ───────────────────────────────────────────────────────────────────
+// ── YOUTUBE IFRAME PLAYER ────────────────────────────────────────────────────
+let ytPlayer = null, ytReady = false;
+let progressInterval = null;
+
+window.onYouTubeIframeAPIReady = function() {
+  ytPlayer = new YT.Player('ytPlayer', {
+    height: '1', width: '1',
+    playerVars: { autoplay: 0, controls: 0, playsinline: 1 },
+    events: {
+      onReady: () => { ytReady = true; },
+      onStateChange: (e) => {
+        if (e.data === YT.PlayerState.PLAYING) {
+          playing = true; updatePlayBtn(true);
+          document.getElementById('fpArt').classList.add('playing');
+          startProgress();
+        } else if (e.data === YT.PlayerState.PAUSED) {
+          playing = false; updatePlayBtn(false);
+          document.getElementById('fpArt').classList.remove('playing');
+          clearInterval(progressInterval);
+        } else if (e.data === YT.PlayerState.ENDED) {
+          clearInterval(progressInterval);
+          if (repeat === 1) ytPlayer.playVideo();
+          else nextTrack();
+        }
+      },
+      onError: () => toast('❌ Cannot play this track')
+    }
+  });
+};
+
+function startProgress() {
+  clearInterval(progressInterval);
+  progressInterval = setInterval(() => {
+    if (!ytPlayer || !ytReady) return;
+    try {
+      const cur = ytPlayer.getCurrentTime() || 0;
+      const dur = ytPlayer.getDuration() || 0;
+      if (dur > 0) {
+        const pct = (cur / dur) * 100;
+        document.getElementById('progFill').style.width = pct + '%';
+        document.getElementById('miniProg').style.width = pct + '%';
+        document.getElementById('curTime').textContent = fmt(cur);
+        document.getElementById('totTime').textContent = fmt(dur);
+      }
+    } catch(e) {}
+  }, 500);
+}
+
 async function playTrack(track, q, idx) {
   if (!track?.videoId) return toast('Cannot play');
-  queue = q||[track]; curIdx = idx||0;
+  queue = q || [track]; curIdx = idx || 0;
   updatePlayerUI(track);
   document.getElementById('miniPlayer').classList.add('show');
   toast('⏳ Loading...');
-  try {
-    const res = await fetch(`${API}/stream/${track.videoId}`);
-    const data = await res.json();
-    if (!data.url) throw new Error('no url');
-    // Try direct URL first
-    audio.src = data.url;
-    audio.load();
+  const tryPlay = () => {
     try {
-      await audio.play();
-    } catch(e) {
-      // Fallback to proxy if direct fails (CORS/format issue)
-      log.warn && log.warn('Direct failed, trying proxy');
-      audio.src = `${API}/proxy/${track.videoId}`;
-      audio.load();
-      await audio.play();
-    }
-    playing = true; updatePlayBtn(true);
-    document.getElementById('fpArt').classList.add('playing');
-    addToHistory(track);
-    updateMediaSession(track);
-    toast('');
-  } catch(e) {
-    toast('❌ Failed to load audio');
-    updatePlayBtn(false);
+      ytPlayer.loadVideoById(track.videoId);
+      addToHistory(track);
+      updateMediaSession(track);
+      setTimeout(() => toast(''), 1500);
+    } catch(e) { toast('❌ Failed to play'); }
+  };
+  if (ytReady && ytPlayer) {
+    tryPlay();
+  } else {
+    let tries = 0;
+    const wait = setInterval(() => {
+      if (ytReady && ytPlayer) { clearInterval(wait); tryPlay(); }
+      if (++tries > 30) { clearInterval(wait); toast('❌ Player not ready'); }
+    }, 200);
   }
 }
 
 function updatePlayerUI(t) {
-  const thumb=t.thumbnail||'icons/icon-192.png', title=t.title||'Unknown', artist=t.artist||'Unknown';
-  document.getElementById('miniThumb').src=thumb;
-  document.getElementById('miniTitle').textContent=title;
-  document.getElementById('miniArtist').textContent=artist;
-  document.getElementById('fpImg').src=thumb;
-  document.getElementById('fpImg').onerror=()=>{ document.getElementById('fpImg').src='icons/icon-192.png'; };
-  document.getElementById('fpTitle').textContent=title;
-  document.getElementById('fpArtist').textContent=artist;
-  document.getElementById('trackModalTitle').textContent=title;
-  document.title=`${title} — Sona`;
-  // Set blur background
-  const blur=document.getElementById('fpArtBlur');
-  if(blur) blur.style.backgroundImage=`url(${thumb})`;
-  // Like state
-  const liked=library.liked.some(l=>l.videoId===t.videoId);
-  document.getElementById('likeBtn').className=`fp-act${liked?' liked':''}`;
-  document.getElementById('likeBtn').querySelector('i').className=liked?'ph-fill ph-heart':'ph ph-heart';
+  const thumb = t.thumbnail || 'icons/icon-192.png';
+  const title = t.title || 'Unknown';
+  const artist = t.artist || 'Unknown';
+  document.getElementById('miniThumb').src = thumb;
+  document.getElementById('miniTitle').textContent = title;
+  document.getElementById('miniArtist').textContent = artist;
+  document.getElementById('fpImg').src = thumb;
+  document.getElementById('fpImg').onerror = () => { document.getElementById('fpImg').src = 'icons/icon-192.png'; };
+  document.getElementById('fpTitle').textContent = title;
+  document.getElementById('fpArtist').textContent = artist;
+  document.getElementById('trackModalTitle').textContent = title;
+  document.title = `${title} — Sona`;
+  const blur = document.getElementById('fpArtBlur');
+  if (blur) blur.style.backgroundImage = `url(${thumb})`;
+  const liked = library.liked.some(l => l.videoId === t.videoId);
+  document.getElementById('likeBtn').className = `fp-act${liked ? ' liked' : ''}`;
+  document.getElementById('likeBtn').querySelector('i').className = liked ? 'ph-fill ph-heart' : 'ph ph-heart';
 }
 
 function togglePlay() {
-  if(audio.paused){audio.play();playing=true;}else{audio.pause();playing=false;}
+  if (!ytPlayer || !ytReady) return;
+  if (playing) { ytPlayer.pauseVideo(); playing = false; }
+  else { ytPlayer.playVideo(); playing = true; }
   updatePlayBtn(playing);
-  document.getElementById('fpArt').classList.toggle('playing',playing);
+  document.getElementById('fpArt').classList.toggle('playing', playing);
 }
+
 function updatePlayBtn(p) {
-  const ic=p?'ph-fill ph-pause':'ph-fill ph-play';
-  document.getElementById('miniPlayBtn').innerHTML=`<i class="${ic}"></i>`;
-  document.getElementById('fpPlayBtn').innerHTML=`<i class="${ic}"></i>`;
+  const ic = p ? 'ph-fill ph-pause' : 'ph-fill ph-play';
+  document.getElementById('miniPlayBtn').innerHTML = `<i class="${ic}"></i>`;
+  document.getElementById('fpPlayBtn').innerHTML = `<i class="${ic}"></i>`;
 }
-function prevTrack() { if(curIdx>0){curIdx--;playTrack(queue[curIdx],queue,curIdx);} }
+
+function prevTrack() { if (curIdx > 0) { curIdx--; playTrack(queue[curIdx], queue, curIdx); } }
 function nextTrack() {
-  if(shuffle) curIdx=Math.floor(Math.random()*queue.length);
-  else if(curIdx<queue.length-1) curIdx++;
-  else if(repeat===2) curIdx=0;
+  if (shuffle) curIdx = Math.floor(Math.random() * queue.length);
+  else if (curIdx < queue.length - 1) curIdx++;
+  else if (repeat === 2) curIdx = 0;
   else return;
-  playTrack(queue[curIdx],queue,curIdx);
+  playTrack(queue[curIdx], queue, curIdx);
 }
-function toggleShuffle() { shuffle=!shuffle; document.getElementById('shuffleBtn').classList.toggle('on',shuffle); toast(shuffle?'Shuffle on':'Shuffle off'); }
+function toggleShuffle() { shuffle = !shuffle; document.getElementById('shuffleBtn').classList.toggle('on', shuffle); toast(shuffle ? 'Shuffle on' : 'Shuffle off'); }
 function toggleRepeat() {
-  repeat=(repeat+1)%3;
-  const btn=document.getElementById('repeatBtn');
-  btn.classList.toggle('on',repeat>0);
-  btn.innerHTML=repeat===1?'<i class="ph ph-repeat-once"></i>':'<i class="ph ph-repeat"></i>';
+  repeat = (repeat + 1) % 3;
+  const btn = document.getElementById('repeatBtn');
+  btn.classList.toggle('on', repeat > 0);
+  btn.innerHTML = repeat === 1 ? '<i class="ph ph-repeat-once"></i>' : '<i class="ph ph-repeat"></i>';
 }
-function setVolume(v) { audio.volume=v/100; }
-function seekTo(e) { const b=e.currentTarget; audio.currentTime=(e.offsetX/b.offsetWidth)*audio.duration; }
+function setVolume(v) { if (ytPlayer && ytReady) ytPlayer.setVolume(v); }
+function seekTo(e) {
+  if (!ytPlayer || !ytReady) return;
+  const b = e.currentTarget;
+  ytPlayer.seekTo((e.offsetX / b.offsetWidth) * (ytPlayer.getDuration() || 0), true);
+}
 function openFullPlayer() { document.getElementById('fullPlayer').classList.add('open'); }
 function closeFullPlayer() { document.getElementById('fullPlayer').classList.remove('open'); }
+function fmt(s) { if (isNaN(s)) return '0:00'; const m = Math.floor(s / 60), sec = Math.floor(s % 60); return `${m}:${sec.toString().padStart(2, '0')}`; }
 
-audio.addEventListener('timeupdate',()=>{
-  if(!audio.duration)return;
-  const p=(audio.currentTime/audio.duration)*100;
-  document.getElementById('progFill').style.width=p+'%';
-  document.getElementById('miniProg').style.width=p+'%';
-  document.getElementById('curTime').textContent=fmt(audio.currentTime);
-  document.getElementById('totTime').textContent=fmt(audio.duration);
-});
-audio.addEventListener('ended',()=>{ if(repeat===1)audio.play(); else nextTrack(); });
-function fmt(s){if(isNaN(s))return'0:00';const m=Math.floor(s/60),sec=Math.floor(s%60);return`${m}:${sec.toString().padStart(2,'0')}`;}
-
-// Media Session API (lock screen controls)
 function setupMediaSession() {
-  navigator.mediaSession.setActionHandler('play',()=>{audio.play();playing=true;updatePlayBtn(true);});
-  navigator.mediaSession.setActionHandler('pause',()=>{audio.pause();playing=false;updatePlayBtn(false);});
-  navigator.mediaSession.setActionHandler('previoustrack',prevTrack);
-  navigator.mediaSession.setActionHandler('nexttrack',nextTrack);
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.setActionHandler('play', () => { ytPlayer?.playVideo(); playing = true; updatePlayBtn(true); });
+  navigator.mediaSession.setActionHandler('pause', () => { ytPlayer?.pauseVideo(); playing = false; updatePlayBtn(false); });
+  navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+  navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
 }
 function updateMediaSession(t) {
-  if(!('mediaSession' in navigator))return;
-  navigator.mediaSession.metadata=new MediaMetadata({title:t.title||'Unknown',artist:t.artist||'Unknown',artwork:[{src:t.thumbnail||'icons/icon-192.png',sizes:'192x192'}]});
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: t.title || 'Unknown', artist: t.artist || 'Unknown',
+    artwork: [{ src: t.thumbnail || 'icons/icon-192.png', sizes: '192x192' }]
+  });
 }
 
 // ── LIBRARY ──────────────────────────────────────────────────────────────────
@@ -1103,16 +1140,31 @@ function toggleLike(){
 }
 async function downloadCurrent(){
   const t=queue[curIdx];if(!t)return;
-  toast('⬇️ Downloading...');
+  toast('⬇️ Download starting...');
   try{
     const a=document.createElement('a');
     a.href=`${API}/download/${t.videoId}?title=${encodeURIComponent(t.title||'track')}`;
-    a.download=`${t.title||'track'}.mp3`;a.click();
-    library.downloads.unshift(t);saveLib();toast('✅ Downloading!');
-  }catch(e){toast('Download failed');}
+    a.download=`${t.title||'track'}.mp3`;
+    a.target='_blank';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    library.downloads.unshift(t);saveLib();toast('✅ Download started!');
+  }catch(e){
+    window.open(t.url||`https://youtube.com/watch?v=${t.videoId}`,'_blank');
+    toast('Opening YouTube...');
+  }
 }
 function saveLib(){localStorage.setItem('sona_lib',JSON.stringify(library));}
-function openTrackOpts(t){queue=queue.length?queue:[t];curIdx=0;updatePlayerUI(t);openModal('trackModal');}
+function openTrackOpts(t) {
+  // Set as current track so modal actions work on it
+  if (!queue.length) { queue = [t]; curIdx = 0; }
+  else {
+    const idx = queue.findIndex(x => x.videoId === t.videoId);
+    if (idx >= 0) curIdx = idx;
+    else { queue = [t]; curIdx = 0; }
+  }
+  updatePlayerUI(t);
+  openModal('trackModal');
+}
 
 // ── PREFS ─────────────────────────────────────────────────────────────────────
 function buildGenreGrid(){
@@ -1210,5 +1262,7 @@ function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 document.querySelectorAll('.modal-ov').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
 </script>
+<!-- Load YouTube IFrame API last so onYouTubeIframeAPIReady is already defined -->
+<script src="https://www.youtube.com/iframe_api"></script>
 </body>
 </html>
