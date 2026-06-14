@@ -497,7 +497,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
       <div class="settings-section">
         <div class="settings-label">App</div>
         <div class="settings-card">
-          <div class="settings-row" onclick="installApp()">
+          <div class="settings-row" id="installRow" onclick="installApp()">
             <div class="s-icon"><i class="ph ph-device-mobile"></i></div>
             <div class="s-info"><div class="s-title">Install Sona</div><div class="s-sub">Add to home screen</div></div>
             <i class="ph ph-caret-right s-right"></i>
@@ -554,21 +554,52 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
     <div class="fp-label">Now Playing</div>
     <button class="icon-btn" onclick="openModal('trackModal')"><i class="ph ph-dots-three-outline-vertical"></i></button>
   </div>
-  <div class="fp-art" id="fpArt"><img id="fpImg" src="" alt=""/></div>
+
+  <!-- Artwork with app icon fallback -->
+  <div class="fp-art" id="fpArt">
+    <img id="fpImg" src="" alt="" onerror="this.src='icons/icon-192.png'"/>
+    <div class="fp-art-blur" id="fpArtBlur"></div>
+  </div>
+
+  <!-- Track info -->
   <div class="fp-info">
     <div class="fp-title" id="fpTitle">—</div>
     <div class="fp-artist" id="fpArtist">—</div>
   </div>
+
+  <!-- Actions -->
   <div class="fp-actions">
     <button class="fp-act" id="likeBtn" onclick="toggleLike()"><i class="ph ph-heart"></i></button>
     <button class="fp-act" onclick="downloadCurrent()"><i class="ph ph-download-simple"></i></button>
     <button class="fp-act" onclick="shareTrack()"><i class="ph ph-share-network"></i></button>
     <button class="fp-act" onclick="openModal('trackModal')"><i class="ph ph-dots-three-outline-vertical"></i></button>
   </div>
+
+  <!-- Progress bar -->
   <div class="prog-wrap">
-    <div class="prog-bar" onclick="seekTo(event)"><div class="prog-fill" id="progFill"></div></div>
+    <div class="prog-bar" id="progBar" onclick="seekTo(event)">
+      <div class="prog-fill" id="progFill"></div>
+    </div>
     <div class="prog-times"><span id="curTime">0:00</span><span id="totTime">0:00</span></div>
   </div>
+
+  <!-- Seek controls row -->
+  <div class="seek-row">
+    <button class="seek-btn" onclick="seekBy(-60)" title="-1 min">
+      <i class="ph ph-rewind"></i><span>1m</span>
+    </button>
+    <button class="seek-btn" onclick="seekBy(-10)" title="-10s">
+      <i class="ph ph-arrow-counter-clockwise"></i><span>10s</span>
+    </button>
+    <button class="seek-btn" onclick="seekBy(10)" title="+10s">
+      <i class="ph ph-arrow-clockwise"></i><span>10s</span>
+    </button>
+    <button class="seek-btn" onclick="seekBy(60)" title="+1 min">
+      <i class="ph ph-fast-forward"></i><span>1m</span>
+    </button>
+  </div>
+
+  <!-- Main controls -->
   <div class="fp-controls">
     <button class="fp-btn sm" id="shuffleBtn" onclick="toggleShuffle()"><i class="ph ph-shuffle"></i></button>
     <button class="fp-btn" onclick="prevTrack()"><i class="ph ph-skip-back"></i></button>
@@ -576,6 +607,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
     <button class="fp-btn" onclick="nextTrack()"><i class="ph ph-skip-forward"></i></button>
     <button class="fp-btn sm" id="repeatBtn" onclick="toggleRepeat()"><i class="ph ph-repeat"></i></button>
   </div>
+
+  <!-- Volume row - compact, at bottom -->
   <div class="vol-row">
     <i class="ph ph-speaker-low"></i>
     <input type="range" class="vol-slider" min="0" max="100" value="80" oninput="setVolume(this.value)"/>
@@ -642,7 +675,16 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
   </div>
   <button onclick="installApp()" style="width:100%;margin-top:.8rem;padding:.7rem;border-radius:12px;background:var(--grad);border:none;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem;cursor:pointer">⬇️ Install Now</button>
 </div>
-<style>@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}</style>
+<style>/* SEEK CONTROLS */
+.seek-row{display:flex;justify-content:center;gap:1.2rem;margin-bottom:1rem;}
+.seek-btn{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:.5rem .8rem;color:var(--text);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:.2rem;font-size:.7rem;font-weight:600;min-width:52px;transition:all .2s;}
+.seek-btn:hover{background:rgba(108,99,255,.15);border-color:var(--violet);}
+.seek-btn i{font-size:1.1rem;}
+/* Artwork blur background */
+.fp-art{position:relative;overflow:visible;}
+.fp-art-blur{position:fixed;inset:0;z-index:-1;background-size:cover;background-position:center;filter:blur(40px) brightness(.3);opacity:0;transition:opacity .5s;}
+#fullPlayer.open .fp-art-blur{opacity:1;}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}</style>
 
 <script>
 // ── SUPABASE ────────────────────────────────────────────────────────────────
@@ -835,6 +877,7 @@ function enterMainApp() {
   updateSubs();
   loadLibContent('liked');
   loadHome();
+  checkPWAMode();
 }
 
 function updateUserUI() {
@@ -942,14 +985,26 @@ async function playTrack(track, q, idx) {
   document.getElementById('miniPlayer').classList.add('show');
   toast('⏳ Loading...');
   try {
-    // Use stream endpoint directly as audio src
-    audio.src = `${API}/stream/${track.videoId}`;
+    const res = await fetch(`${API}/stream/${track.videoId}`);
+    const data = await res.json();
+    if (!data.url) throw new Error('no url');
+    // Try direct URL first
+    audio.src = data.url;
     audio.load();
-    await audio.play();
+    try {
+      await audio.play();
+    } catch(e) {
+      // Fallback to proxy if direct fails (CORS/format issue)
+      log.warn && log.warn('Direct failed, trying proxy');
+      audio.src = `${API}/proxy/${track.videoId}`;
+      audio.load();
+      await audio.play();
+    }
     playing = true; updatePlayBtn(true);
     document.getElementById('fpArt').classList.add('playing');
     addToHistory(track);
     updateMediaSession(track);
+    toast('');
   } catch(e) {
     toast('❌ Failed to load audio');
     updatePlayBtn(false);
@@ -957,15 +1012,20 @@ async function playTrack(track, q, idx) {
 }
 
 function updatePlayerUI(t) {
-  const thumb=t.thumbnail||'', title=t.title||'Unknown', artist=t.artist||'Unknown';
+  const thumb=t.thumbnail||'icons/icon-192.png', title=t.title||'Unknown', artist=t.artist||'Unknown';
   document.getElementById('miniThumb').src=thumb;
   document.getElementById('miniTitle').textContent=title;
   document.getElementById('miniArtist').textContent=artist;
   document.getElementById('fpImg').src=thumb;
+  document.getElementById('fpImg').onerror=()=>{ document.getElementById('fpImg').src='icons/icon-192.png'; };
   document.getElementById('fpTitle').textContent=title;
   document.getElementById('fpArtist').textContent=artist;
   document.getElementById('trackModalTitle').textContent=title;
   document.title=`${title} — Sona`;
+  // Set blur background
+  const blur=document.getElementById('fpArtBlur');
+  if(blur) blur.style.backgroundImage=`url(${thumb})`;
+  // Like state
   const liked=library.liked.some(l=>l.videoId===t.videoId);
   document.getElementById('likeBtn').className=`fp-act${liked?' liked':''}`;
   document.getElementById('likeBtn').querySelector('i').className=liked?'ph-fill ph-heart':'ph ph-heart';
@@ -1102,7 +1162,18 @@ function showPage(name){
   document.getElementById('page-'+name).classList.add('active');
   document.getElementById('nav-'+name).classList.add('active');
 }
-function shareTrack(){const t=queue[curIdx];if(!t)return;if(navigator.share)navigator.share({title:t.title,url:window.location.href});else{navigator.clipboard.writeText(window.location.href);toast('Link copied!');}}
+function shareTrack() {
+  const t = queue[curIdx];
+  if (!t) return;
+  const ytUrl = t.url || `https://youtube.com/watch?v=${t.videoId}`;
+  const text = `🎵 ${t.title} by ${t.artist}`;
+  if (navigator.share) {
+    navigator.share({ title: t.title, text, url: ytUrl });
+  } else {
+    navigator.clipboard.writeText(`${text}\n${ytUrl}`);
+    toast('Link copied!');
+  }
+}
 function viewArtist(){const t=queue[curIdx];if(t){document.getElementById('searchInput').value=t.artist;showPage('search');doSearch(t.artist);}}
 async function loadMoreTracks(type) {
   showPage('search');
@@ -1113,6 +1184,12 @@ async function loadMoreTracks(type) {
 function installApp(){if(deferredInstall){deferredInstall.prompt();hideInstallBanner();}else toast('Browser menu → Add to Home Screen');}
 function showInstallBanner(){document.getElementById('installBanner').style.display='block';}
 function hideInstallBanner(){document.getElementById('installBanner').style.display='none';}
+function seekBy(secs){if(!audio.duration)return;audio.currentTime=Math.max(0,Math.min(audio.duration,audio.currentTime+secs));}
+function checkPWAMode(){
+  const isPWA=window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true;
+  const row=document.getElementById('installRow');
+  if(row)row.style.display=isPWA?'none':'flex';
+}
 function clearCache(){caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).then(()=>toast('✅ Cache cleared'));}
 
 function toggleTheme(){

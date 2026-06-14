@@ -1,7 +1,7 @@
 import os, json, hashlib, re, subprocess, logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_file, Response, stream_with_context
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context, redirect
 from flask_cors import CORS
 import requests
 
@@ -29,59 +29,45 @@ def search_tracks(query, limit=10):
     key = hashlib.md5(f'{query}:{limit}'.encode()).hexdigest()
     cached = cache_get(key)
     if cached: return cached
-
     tracks = []
-
-    # YouTube Data API v3 - no bot detection
     if YT_API_KEY:
         try:
             r = requests.get('https://www.googleapis.com/youtube/v3/search', params={
-                'part': 'snippet',
-                'q': query,
-                'type': 'video',
-                'videoCategoryId': '10',  # Music category
-                'maxResults': limit,
-                'key': YT_API_KEY,
+                'part': 'snippet', 'q': query, 'type': 'video',
+                'videoCategoryId': '10', 'maxResults': limit, 'key': YT_API_KEY,
             }, timeout=10)
-            data = r.json()
-            items = data.get('items', [])
-            # Get durations via videos endpoint
-            ids = ','.join([i['id']['videoId'] for i in items if i.get('id',{}).get('videoId')])
+            items = r.json().get('items', [])
+            ids = ','.join([i['id']['videoId'] for i in items if i.get('id', {}).get('videoId')])
             dur_map = {}
             if ids:
                 vr = requests.get('https://www.googleapis.com/youtube/v3/videos', params={
-                    'part': 'contentDetails',
-                    'id': ids,
-                    'key': YT_API_KEY,
+                    'part': 'contentDetails', 'id': ids, 'key': YT_API_KEY,
                 }, timeout=10)
                 for v in vr.json().get('items', []):
-                    dur = v.get('contentDetails', {}).get('duration', '')
-                    # Parse ISO 8601 duration PT3M45S
                     import re as re2
-                    m = re2.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', dur)
+                    m = re2.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?',
+                                  v.get('contentDetails', {}).get('duration', ''))
                     if m:
                         h, mn, s = (int(x or 0) for x in m.groups())
                         total = h*3600 + mn*60 + s
-                        mins2, secs = divmod(total, 60)
-                        dur_map[v['id']] = f'{mins2}:{secs:02d}'
-
+                        mm, ss = divmod(total, 60)
+                        dur_map[v['id']] = f'{mm}:{ss:02d}'
             for item in items:
                 vid = item.get('id', {}).get('videoId', '')
                 if not vid: continue
-                snippet = item.get('snippet', {})
-                thumb = snippet.get('thumbnails', {}).get('high', {}).get('url') or \
+                sn = item.get('snippet', {})
+                thumb = sn.get('thumbnails', {}).get('high', {}).get('url') or \
                         f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'
                 tracks.append({
                     'videoId': vid,
-                    'title': snippet.get('title', 'Unknown'),
-                    'artist': snippet.get('channelTitle', 'Unknown').replace(' - Topic', ''),
+                    'title': sn.get('title', 'Unknown'),
+                    'artist': sn.get('channelTitle', 'Unknown').replace(' - Topic', ''),
                     'thumbnail': thumb,
                     'duration': dur_map.get(vid, ''),
                     'url': f'https://youtube.com/watch?v={vid}',
                 })
         except Exception as e:
             log.error(f'YouTube API error: {e}')
-
     if tracks:
         cache_set(key, tracks)
     return tracks
@@ -91,14 +77,15 @@ def get_audio_url(video_id):
     cached = cache_get(key)
     if cached: return cached
     try:
-        cmd = ['yt-dlp', f'https://youtube.com/watch?v={video_id}',
-               '--get-url', '-f', 'bestaudio[ext=m4a]/bestaudio/best',
-               '--no-warnings', '--quiet']
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        url = r.stdout.strip().split('\n')[0]
-        if url and url.startswith('http'):
-            cache_set(key, url, mins=4)
-            return url
+        # Try bestaudio m4a first (more compatible with browsers)
+        for fmt in ['bestaudio[ext=m4a]', 'bestaudio[ext=webm]', 'bestaudio']:
+            cmd = ['yt-dlp', f'https://youtube.com/watch?v={video_id}',
+                   '--get-url', '-f', fmt, '--no-warnings', '--quiet']
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            url = r.stdout.strip().split('\n')[0]
+            if url and url.startswith('http'):
+                cache_set(key, url, mins=4)
+                return url
     except Exception as e:
         log.error(f'Audio URL error: {e}')
     return ''
@@ -117,28 +104,36 @@ def search():
 
 @app.route('/api/stream/<video_id>')
 def stream(video_id):
+    """Get audio URL and redirect browser to it directly."""
     try:
         url = get_audio_url(video_id)
         if not url:
             return jsonify({'error': 'Could not get audio URL'}), 404
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Range': request.headers.get('Range', 'bytes=0-')
-        }
-        r = requests.get(url, headers=headers, stream=True, timeout=10)
+        # Return URL for browser to stream directly - avoids server bandwidth
+        return jsonify({'url': url, 'videoId': video_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/<video_id>')
+def proxy(video_id):
+    """Proxy stream for browsers that can't handle YouTube URLs directly."""
+    try:
+        url = get_audio_url(video_id)
+        if not url:
+            return jsonify({'error': 'No URL'}), 404
+        range_header = request.headers.get('Range', 'bytes=0-')
+        headers = {'User-Agent': 'Mozilla/5.0 (compatible)', 'Range': range_header}
+        r = requests.get(url, headers=headers, stream=True, timeout=15)
         def generate():
-            for chunk in r.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(8192):
                 if chunk: yield chunk
         resp_headers = {
             'Content-Type': r.headers.get('Content-Type', 'audio/mp4'),
             'Accept-Ranges': 'bytes',
         }
-        if 'Content-Length' in r.headers:
-            resp_headers['Content-Length'] = r.headers['Content-Length']
-        if 'Content-Range' in r.headers:
-            resp_headers['Content-Range'] = r.headers['Content-Range']
-        return Response(stream_with_context(generate()),
-                       status=r.status_code, headers=resp_headers)
+        if 'Content-Length' in r.headers: resp_headers['Content-Length'] = r.headers['Content-Length']
+        if 'Content-Range' in r.headers: resp_headers['Content-Range'] = r.headers['Content-Range']
+        return Response(stream_with_context(generate()), status=r.status_code, headers=resp_headers)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
