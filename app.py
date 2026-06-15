@@ -219,17 +219,43 @@ def stream(video_id):
 def proxy(video_id):
     try:
         url = get_stream_url(video_id)
-        if not url: return jsonify({'error': 'No URL'}), 404
-        headers = {'User-Agent': 'Mozilla/5.0', 'Range': request.headers.get('Range', 'bytes=0-')}
-        r = requests.get(url, headers=headers, stream=True, timeout=15)
+        if not url: 
+            return jsonify({'error': 'No stream URL found'}), 404
+        
+        range_header = request.headers.get('Range', None)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.youtube.com/',
+        }
+        if range_header:
+            headers['Range'] = range_header
+
+        r = requests.get(url, headers=headers, stream=True, timeout=30)
+        
+        content_type = r.headers.get('Content-Type', 'audio/mp4')
+        # Ensure browser treats as audio
+        if 'video' in content_type:
+            content_type = 'audio/mp4'
+
         def generate():
-            for chunk in r.iter_content(8192):
+            for chunk in r.iter_content(chunk_size=16384):
                 if chunk: yield chunk
-        resp_headers = {'Content-Type': r.headers.get('Content-Type', 'audio/mp4'), 'Accept-Ranges': 'bytes'}
-        if 'Content-Length' in r.headers: resp_headers['Content-Length'] = r.headers['Content-Length']
-        if 'Content-Range' in r.headers: resp_headers['Content-Range'] = r.headers['Content-Range']
-        return Response(stream_with_context(generate()), status=r.status_code, headers=resp_headers)
+
+        resp_headers = {
+            'Content-Type': content_type,
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-cache',
+        }
+        if 'Content-Length' in r.headers:
+            resp_headers['Content-Length'] = r.headers['Content-Length']
+        if 'Content-Range' in r.headers:
+            resp_headers['Content-Range'] = r.headers['Content-Range']
+
+        status = r.status_code if r.status_code in [200, 206] else 200
+        return Response(stream_with_context(generate()), status=status, headers=resp_headers)
     except Exception as e:
+        log.error(f'Proxy error: {e}')
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download/<video_id>')

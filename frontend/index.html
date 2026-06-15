@@ -981,40 +981,19 @@ async function playTrack(track, q, idx) {
   updatePlayerUI(track);
   document.getElementById('miniPlayer').classList.add('show');
   toast('⏳ Loading...');
+  // Always use proxy - direct YouTube/Piped URLs have CORS issues in browser
+  audio.src = `${API}/proxy/${track.videoId}`;
+  audio.load();
   try {
-    const res = await fetch(`${API}/stream/${track.videoId}`);
-    const data = await res.json();
-    if (!data.url) throw new Error('no url');
-    // Try direct URL
-    audio.src = data.url;
-    audio.load();
-    const playPromise = audio.play();
-    if (playPromise) {
-      playPromise.catch(async () => {
-        // Fallback to proxy
-        audio.src = `${API}/proxy/${track.videoId}`;
-        audio.load();
-        await audio.play();
-      });
-    }
+    await audio.play();
     playing = true; updatePlayBtn(true);
     document.getElementById('fpArt').classList.add('playing');
     addToHistory(track);
     updateMediaSession(track);
-    setTimeout(() => toast(''), 1500);
+    setTimeout(() => toast(''), 1000);
   } catch(e) {
-    // Last fallback - proxy
-    try {
-      audio.src = `${API}/proxy/${track.videoId}`;
-      audio.load();
-      await audio.play();
-      playing = true; updatePlayBtn(true);
-      addToHistory(track);
-      setTimeout(() => toast(''), 1500);
-    } catch(e2) {
-      toast('❌ Failed to load audio');
-      updatePlayBtn(false);
-    }
+    toast('❌ Failed to play');
+    updatePlayBtn(false);
   }
 }
 
@@ -1072,12 +1051,19 @@ function closeFullPlayer() { document.getElementById('fullPlayer').classList.rem
 function fmt(s) { if (isNaN(s)) return '0:00'; const m = Math.floor(s/60), sec = Math.floor(s%60); return `${m}:${sec.toString().padStart(2,'0')}`; }
 
 audio.addEventListener('timeupdate', () => {
-  if (!audio.duration) return;
-  const p = (audio.currentTime / audio.duration) * 100;
+  const dur = audio.duration;
+  const cur = audio.currentTime;
+  if (!dur || isNaN(dur) || dur === Infinity) return;
+  const p = (cur / dur) * 100;
   document.getElementById('progFill').style.width = p + '%';
   document.getElementById('miniProg').style.width = p + '%';
-  document.getElementById('curTime').textContent = fmt(audio.currentTime);
-  document.getElementById('totTime').textContent = fmt(audio.duration);
+  document.getElementById('curTime').textContent = fmt(cur);
+  document.getElementById('totTime').textContent = fmt(dur);
+});
+audio.addEventListener('loadedmetadata', () => {
+  if (audio.duration && !isNaN(audio.duration)) {
+    document.getElementById('totTime').textContent = fmt(audio.duration);
+  }
 });
 audio.addEventListener('ended', () => { if (repeat === 1) audio.play(); else nextTrack(); });
 audio.addEventListener('error', () => toast('❌ Playback error'));
